@@ -1,0 +1,60 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# packaging / build
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# tests, coverage, type checkers, linters
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# --- JetBrains (PyCharm) ------------------------------------------------------
+# The whole .idea folder is personal (interpreter paths, workspace, run configs).
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# --- other editors / OS -------------------------------------------------------
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- project ------------------------------------------------------------------
+# benchmark output (re-create with benchmarks/run_benchmark.py); figures for the
+# README are copied to docs/
+benchmarks/results/
+# user data: detections and calibrations
+*.npz
+rig*.json

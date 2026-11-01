@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "posecalib"
+version = "0.1.0"
+description = "Extrinsic calibration of a multi-camera rig from human body keypoints - no calibration board"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.22",
+    "scipy>=1.8",
+]
+keywords = ["camera calibration", "multi-camera", "pose estimation", "keypoints", "bundle adjustment",
+            "markerless motion capture"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+[project.optional-dependencies]
+bench = ["matplotlib>=3.5"]
+dev = ["pytest>=7", "matplotlib>=3.5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["slow: end-to-end calibration on a synthetic scene (about a minute)"]

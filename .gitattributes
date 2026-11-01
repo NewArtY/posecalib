@@ -1,0 +1,31 @@
+# Normalise line endings: LF in the repository, native on checkout.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Source and text
+*.py   text diff=python
+*.md   text diff=markdown
+*.toml text
+*.yml  text
+*.yaml text
+*.json text
+*.csv  text
+*.txt  text
+
+# Binary files: no diff, no line-ending conversion
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.npz  binary
+*.npy  binary
+*.mp4  binary
+
+# GitHub language statistics: examples and benchmarks are not library code
+benchmarks/** linguist-documentation
+examples/**   linguist-documentation
