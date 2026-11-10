@@ -1,149 +1,216 @@
 # posecalib
 
-**Extrinsic calibration of a static multi-camera rig from the body keypoints of one moving person. No calibration board.**
+Python library and command-line examples to estimate the extrinsics of a fixed multi-camera rig from 2D keypoints of one moving person.
+Use overlapping views, varied motion and pre-calibrated intrinsics. Supply undistorted pixel
+coordinates and the intrinsics for those exact images. The built-in layouts are COCO-17 and
+all 33 MediaPipe BlazePose landmarks.
 
-Markerless motion capture triangulates 2D keypoints from several cameras, which requires the position and orientation
-of every camera. The usual way to obtain them is to wave a checkerboard or ChArUco board in front of all cameras.
-`posecalib` uses the person instead: a pose detector returns the same ordered set of keypoints in every view, so
-cross-view correspondences are known without feature matching. A 20–40 s walk across the capture area gives
-thousands of them, spread over the whole working volume. They are noisier than board corners, but a robust weighted
-bundle adjustment estimates camera positions and orientations from these observations.
+## Install
+
+Run the examples from a checkout in a fresh virtual environment. The core supports Python 3.9+
+and uses NumPy and SciPy.
+
+```sh
+python -m pip install .
+python examples/synthetic_quickstart.py
+```
+
+For the direct video workflow, install with `python -m pip install ".[video]"` instead. Use a
+Python and platform combination with MediaPipe wheels. The extra uses `opencv-contrib-python`
+as the sole provider of `cv2`. Keep other OpenCV distributions out of that environment.
+Existing keypoint exports only need the core installation. With uv, use `uv sync --locked`
+or `uv sync --locked --extra video` and run the commands below through `uv run --no-sync`.
+
+## Prepare detections
+
+Keep all 33 landmarks in BlazePose order. For each camera, export an NPZ with `landmarks`
+of shape `(F,33,4)` containing normalized `x, y, z, visibility`, or `(F,33,5)` with
+`presence` last. Include `image_size=[width, height]` and the undistorted image's `K`.
+The adapter uses normalized x/y to compute pixel coordinates. It derives confidence from
+visibility, or the minimum of visibility and presence when both are present. Leave missing
+landmarks as NaN and retain missed frames. Include a `timestamps` vector in seconds in
+every file if supplying timestamps or merging unequal lengths. The merger preserves the
+clocks and pads unequal lengths with NaN coordinates and zero confidence.
+
+```sh
+python examples/prepare_blazepose_npz.py cam0.npz cam1.npz cam2.npz --out detections.npz
+```
+
+For video, supply a local MediaPipe Pose Landmarker `.task` model and a `cameras.npz` with
+`K` of shape `(C,3,3)` and `dist_coeffs` of shape `(C,D)` using OpenCV pinhole
+coefficients. For already-undistorted input, pass `--already-undistorted` with the
+corresponding `K`. Process fisheye footage separately before using this workflow.
+
+```sh
+python examples/prepare_blazepose_videos.py --videos cam0.mp4 cam1.mp4 cam2.mp4 --intrinsics cameras.npz --model pose_landmarker.task --out detections.npz
+```
+
+The video helper records frame index divided by reported FPS, starting at zero independently
+for each camera. Use constant-frame-rate (CFR) input. These are local clocks. For known-clock
+alignment, supply independently established common-clock times. Preserve capture timing
+separately for variable-frame-rate sources, since the video helper does not read container
+presentation timestamps.
+
+### Calibration NPZ
+
+| Key | Shape | Meaning |
+| --- | --- | --- |
+| `keypoints` | `(C,F,J,2)` | Undistorted x/y pixels. Use NaN for misses. |
+| `confidence` | `(C,F,J)` | Detector scores in [0,1]. Use zero with NaN for misses. |
+| `K` | `(C,3,3)` or `(3,3)` | Per-camera or shared intrinsics. Zero skew. Required for calibration. |
+| `timestamps` | `(C,F)` or shared `(F,)` | Optional finite, strictly increasing times in seconds. Takes precedence over FPS. |
+| `fps` / `camera_fps` | Scalar / `(C,)` | Optional CFR fallback, with each clock starting at zero. CLI `--fps` supplies a scalar override for these fallback fields. |
+| `frame_counts` | `(C,)` | Optional integer real prefix lengths, 1 through F. Include for padding. |
+
+C counts cameras, F is the stored frame count and J is the landmark count. Timestamp arrays
+must remain finite and strictly increasing through any padding. `frame_counts` excludes
+padding from temporal overlap even if padded values look valid. A detection miss inside a
+real recording still occupies its original frame slot. The Python API accepts scalar or
+per-camera `fps` and a custom `Skeleton` when needed.
+
+## Calibrate the rig
+
+For streams with known common-clock timestamps, let the default mode align them. For arrays
+whose indices already denote corresponding instants, omit both timestamps and FPS.
+
+```sh
+python examples/calibrate_npz.py detections.npz --distance 0 1 5.32 --out rig.json
+```
+
+When the streams have an unknown constant shift, opt in to estimation. Supply timestamps or
+FPS and set a plausible search bound in seconds relative to camera 0.
+
+```sh
+python examples/calibrate_npz.py detections.npz --estimate-sync --max-offset 0.15 --frame-step 5 --distance 0 1 5.32 --out rig.json
+```
+
+Camera 0 has offset zero. At reference time t, a positive offset of 0.033 s samples that
+camera at source time t + 0.033 s. Both modes crop to the common real interval on camera 0's
+grid and use gap-aware cubic resampling where needed. Interpolation stays inside valid runs,
+reduces degree for short runs, and preserves exact valid samples. `--frame-step` subsamples
+after alignment. Keep the input FPS at its original value.
+
+The temporal path defaults to `min_confidence=0.3`. Encode misses as NaN coordinates with
+zero confidence. Even at `min_confidence=0`, zero-confidence detections are excluded from
+calibration, triangulation and synchronization, and break both cubic and linear interpolation.
+Detector scores are screening and weighting inputs.
+
+For unknown offsets, record turns, direction changes and varied limb motion with confident
+tracks overlapping across the rig. Stillness, uniform translation, repeated motion and poor
+overlap can leave the delay ambiguous. Ambiguous pairs are rejected. The estimator raises
+`ValueError` when usable pairs cannot connect the rig, when the solution reaches the search
+boundary, or when pairwise shifts disagree. The CLI exits with an error. Use a better capture
+or independently measured timing if the search cannot resolve an offset. On success,
+inspect the pair diagnostics in `rig.info["synchronization"]` in Python.
+
+Replace `--distance 0 1 5.32` with a measured camera-centre baseline in metres. Python also
+accepts measured segment lengths. The default scale uses approximate body proportions.
+The CLI fits the floor from reconstructed ankles by default. This needs adequate stance
+observations, roughly upright cameras, a horizontal baseline component and a meaningful
+metric scale. Use `--no-floor` to keep camera 0's coordinate frame. For custom skeletons,
+supply ankle indices to `align_to_floor` if the layout has no named ankles.
+
+## Triangulate another recording
+
+Keep the camera order, intrinsics and rig geometry fixed. Supply the new recording's time
+metadata and real frame counts using the same NPZ schema. The default applies any saved
+offsets, which are valid only while the relative timing is unchanged.
+
+```sh
+python examples/triangulate_npz.py rig.json new_detections.npz --out points.npz
+```
+
+- Already aligned arrays use `--already-aligned` or Python `apply_time_offsets=False`.
+  This bypasses all timing handling, including timestamp resampling and frame-count cropping.
+  Trim any padding yourself before using this mode.
+- Known clocks with obsolete saved offsets use `--ignore-time-offsets` or Python
+  `ignore_time_offsets=True`. Keep the default `apply_time_offsets=True` so the new clocks
+  are still aligned with zero residual shift.
+- If a restart or configuration change leaves the new relative timing unknown, estimate
+  offsets for that capture with `estimate_time_offsets`. Pass its aligned keypoints and
+  confidences to `triangulate(..., apply_time_offsets=False)` and keep its returned timestamps.
+
+The CLI writes `points` of shape `(F,J,3)`, `inliers` of shape `(C,F,J)`, and `timestamps`
+when temporal resampling runs. Here F is the output frame count. In Python, use
+`triangulate(..., return_times=True)` to also return the new cropped times, or `None` when no
+resampling ran. `rig.info["reference_times"]` describes the original calibration grid after
+cropping and frame subsampling. The new capture gets its own grid.
+
+The inlier mask describes observations. It can contain true entries for a point that fails
+geometric acceptance. At the lower level, use the `ok` flag from `triangulate_robust`. Public
+`triangulate` emits NaN for rejected points. Use `np.isfinite(points).all(axis=-1)` to select
+accepted output points.
+
+## Python API
+
+Import the public API from `posecalib`. The arrays use the same camera-first layout as
+the [calibration NPZ](#calibration-npz). This example assumes that frame indices are
+already aligned and that both captures use the same camera order and image geometry.
 
 ```python
-from posecalib import calibrate, align_to_floor
+import numpy as np
+from posecalib import Calibration, calibrate, triangulate
 
-# keypoints: (cameras, frames, 17, 2) COCO-17 pixels, NaN if missing; confidence: (cameras, frames, 17)
-calib = calibrate(keypoints, confidence, K, camera_distance=(0, 1, 5.32))   # metres between cameras 0 and 1
-calib = align_to_floor(calib)        # z up, floor at z = 0
+with np.load("detections.npz") as data:
+    rig = calibrate(
+        data["keypoints"], data["confidence"], data["K"],
+        camera_distance=(0, 1, 5.32),
+    )
+rig.save_json("rig.json")
 
-calib.R, calib.t                     # world-to-camera extrinsics, (C,3,3) and (C,3)
-calib.reprojection_rmse              # per-camera RMS reprojection error, px
-calib.save_json('rig.json')
+rig = Calibration.load_json("rig.json")
+with np.load("new_detections.npz") as data:
+    points, inliers = triangulate(
+        rig, data["keypoints"], data["confidence"], apply_time_offsets=False,
+    )
+accepted = np.isfinite(points).all(axis=-1)
 ```
 
-## How it works
+For known capture clocks, pass `timestamps=...` and, for padded input, `frame_counts=...`
+to each call. For unknown constant offsets, pass `estimate_sync=True` and
+`max_offset_seconds=0.15` to `calibrate`, with `timestamps` or `fps`. In either
+case leave triangulation's timing handling enabled and use `return_times=True`
+to get the output times as a third return value.
 
-1. **Correspondences from semantics.** Keypoint *j* in synchronised frame *f* identifies the same body landmark across cameras.
-   Observations below a confidence threshold are dropped.
-2. **Pairwise geometry.** For every camera pair, the relative pose is estimated from confident correspondences:
-   normalised 8-point essential matrix inside LMedS, local optimisation on Sampson distances, and a homography
-   test that pushes near-planar (degenerate) pairs to the end of the queue.
-3. **Incremental growth.** Starting from the pair with the best *inliers × sin(triangulation angle)*, points are
-   triangulated robustly, the remaining cameras are added by robust PnP, and a local bundle adjustment runs after
-   every camera.
-4. **Global bundle adjustment.** Cameras and points are refined together by an M-estimator (Cauchy loss via
-   iteratively reweighted least squares) with observation weights from detector confidence and an optional term
-   that keeps each body segment at a constant length across frames. Sparse analytic Jacobian, SciPy trust-region
-   solver. Focal lengths can be refined as well.
-5. **Metric scale.** Images alone do not determine absolute scale. It is fixed by one measurement: the distance between two cameras
-   (recommended) or measured segment lengths of the person. `align_to_floor` fits the floor robustly to the ankle
-   trajectory.
+| Public API | Contract |
+| --- | --- |
+| `calibrate(keypoints, confidence, K, **options)` | Returns a `Calibration` in camera 0's frame. Defaults to robust Cauchy loss, confidence weighting and segment constraints. Pass `skeleton=` for a custom layout, or `refine_focal=True` to refine focal lengths. |
+| `Calibrator(keypoints, confidence, K, ...)` | Geometry-only workflow for already aligned arrays. Call `initialize()`, then `refine(...)` to control the two stages separately. |
+| `triangulate(rig, keypoints, confidence, **options)` | Returns world points `(F,J,3)` and an observation mask `(C,F,J)`. Rejected points are NaN. F counts output frames. |
+| `project(rig, points)` | Maps world points `(...,3)` to undistorted image pixels `(C,...,2)`. |
+| `reprojection_errors(rig, keypoints, points)` | Returns pixel distances `(C,F,J)` for corresponding observations and 3D points. Pass observations on the same time grid as the points. |
+| `align_to_floor(rig, ...)` | Returns a transformed calibration. Set `foot_keypoints=(left, right)` for a custom skeleton and `foot_height` if the default 0.08 m is unsuitable. |
+| `estimate_time_offsets(keypoints, confidence, K, ...)` | Returns a `Synchronization` with estimated offsets, aligned arrays, output times and diagnostics. Useful for a new capture from a rig whose geometry is already known. |
+| `resample_keypoints(keypoints, confidence, offsets_seconds, ...)` | Applies supplied offsets. Returns aligned keypoints, confidence and timestamps. |
+| `prepare_blazepose(landmarks, image_size, K, ...)` | Converts normalized BlazePose landmarks (C,F,33,4/5) to a dict of pixel keypoints, confidence, intrinsics and image sizes, plus timestamps if supplied. |
+| `to_centered(keypoints, K)` | Converts pixels to the centered, equal-focal-scale coordinates used internally. The main APIs take undistorted image pixels directly. |
 
-## Installation
+`Calibration.R` has shape `(C,3,3)` and `Calibration.t` has shape `(C,3)`.
+The convention is world to camera, `X_camera = R @ X_world + t`. Use
+`rig.centers` for camera positions in world coordinates and
+`rig.projection_matrices()` for the `(C,3,4)` matrices. The result also exposes
+`K`, calibration `points`, `segment_lengths`, `scale_source`,
+`reprojection_rmse`, `inlier_fraction`, `time_offsets_seconds` and `info`.
+Reprojection distances use undistorted image pixels and the returned intrinsics,
+including any refined focal lengths. `rig.info["residuals_px"]` contains one unweighted
+distance per bundle observation, in the same order as `rig.info["weights"]`.
+`rig.reprojection_rmse` (saved as `reprojection_rmse_px`) uses observations with
+robust weight greater than 0.5 in each camera. The optimizer's `sigma_hat` uses
+centered, equal-focal coordinates and includes confidence weighting when enabled.
 
-```bash
-pip install git+https://github.com/NewArtY/posecalib.git
-# or, for development
-git clone https://github.com/NewArtY/posecalib.git
-cd posecalib
-pip install -e ".[dev]"
-```
+Inspect `scale_source` before interpreting coordinates as metres. JSON stores the
+rig and diagnostics for reuse. Export reconstructed points separately if needed.
 
-Dependencies: NumPy and SciPy (Matplotlib only for the benchmark figures). Python 3.9+.
+## Validation and limits
 
-The package takes precomputed keypoint detections. Video capture, camera synchronisation,
-pose detection and lens-distortion correction are handled separately.
+Tests use synthetic geometry and timing, and the video tests mock frames and detections.
+Real model inference, timing accuracy and geometry on a physical rig still need validation.
+Offset estimation assumes a constant shift and does not model drift, jitter or rolling
+shutter. View-dependent detector bias can distort geometry even with small reprojection
+residuals. Check metric scale and geometry against an independent reference.
 
-## Input requirements
-
-| | |
-|---|---|
-| Cameras | static and synchronised; any number ≥ 2 (tested with 4) |
-| Intrinsics | known: `K` per camera, images undistorted (calibrate intrinsics once, e.g. with OpenCV) |
-| Keypoints | COCO-17 layout (OpenPose, MMPose/RTMPose, YOLO-pose, …); other layouts via a custom `Skeleton` |
-| People | exactly one person in view during the calibration walk |
-| Scale | one measured length: distance between two camera centres, or limb lengths of the person |
-
-`examples/calibrate_npz.py` calibrates from a `.npz` file with `keypoints`, `confidence` and `K` arrays.
-
-## Recording the calibration walk
-
-* 20–40 s, one person in the area;
-* walk across the whole area (around the perimeter and in a zigzag), turn around, raise, spread and extend the arms,
-  so that keypoints fill the volume in width and height and every camera sees the body from several sides;
-* standing in place is not enough: the points then occupy a small volume and the problem becomes ill-conditioned.
-
-## Accuracy in simulation
-
-Four cameras on a circle of radius 3.5–4 m around a 4 × 4 m area, 1080p, a person walking with arm movements;
-the simulated detector has confidence-dependent noise, 3 % outliers and 2 % left/right swaps
-(`benchmarks/run_benchmark.py`, median over 10 random scenes).
-
-**Detector noise** (40 s walk, default solver). *dX* is the 3D error that the calibration itself adds: the mean
-displacement of test keypoints when the true cameras are replaced by the estimated ones (scale from the distance
-between two cameras measured with 5 mm error). *MPJPE* is the triangulation error with perfect cameras, i.e. the
-error the detector noise causes anyway.
-
-| detector noise σ₀ | camera rotation error | Cramér–Rao bound | dX | MPJPE |
-|---|---|---|---|---|
-| 1 px | 0.018° | 0.022° | 0.5 mm | 8 mm |
-| 2 px | 0.037° | 0.044° | 0.7 mm | 16 mm |
-| 4 px | 0.068° | 0.088° | 1.2 mm | 30 mm |
-| 8 px | 0.148° | 0.175° | 2.5 mm | 54 mm |
-
-In these simulations, calibration-induced displacement is small relative to the triangulation error.
-The rotation errors and Cramér–Rao reference values have a similar order of magnitude; the reported median
-errors do not establish statistical efficiency.
-Plain least squares, by contrast, gives 0.3–0.5° at any noise level: a robust loss is essential.
-
-![solver variants and walk duration](docs/noise_and_duration.png)
-
-**Walk duration** (σ₀ = 3 px): 0.26° after 5 s, 0.13° after 10 s, 0.09° after 20 s, 0.05° after 40 s, 0.04° after
-60 s. Standing in place for 40 s instead of walking gives 0.30°.
-
-**Systematic keypoint offsets vs a calibration board.** The board is simulated favourably: 7 × 5 squares of 6 cm,
-every visible corner detected with 0.3 px noise, no bias.
-
-| systematic offset | keypoints: rotation / dX | board, 25 poses: rotation / dX | board, 100 poses: rotation / dX |
-|---|---|---|---|
-| 0 cm | 0.053° / 1.0 mm | 0.099° / 2.5 mm | 0.046° / 0.7 mm |
-| 1 cm | 0.086° / 1.6 mm | 0.099° / 2.1 mm | 0.046° / 0.7 mm |
-| 2 cm | 0.146° / 2.2 mm | 0.099° / 2.2 mm | 0.046° / 0.9 mm |
-| 4 cm | 0.238° / 4.0 mm | 0.099° / 2.5 mm | 0.046° / 0.8 mm |
-
-![systematic offsets vs board](docs/bias_vs_board.png)
-
-In this simulation, without systematic offsets, a 40 s walk has about half the rotation error of a short board session and is comparable to a long
-one. The keypoint method degrades as view-dependent detector bias grows, which noise averaging cannot remove.
-
-## Limitations
-
-* **Systematic detector bias sets the accuracy limit.** Random keypoint noise averages out; consistent
-  view-dependent offsets (e.g. where different views place the hip joint) do not. A low reprojection error on body
-  keypoints does not prove the geometry is right: check the calibration on independent data (a reference length,
-  leave-one-camera-out reprojection on a separate recording, or a board).
-* Synchronised cameras and known intrinsics are assumed; a single person must be in view.
-* The benchmark is synthetic; on a real rig the detector's systematic error has to be measured.
-
-## Repository layout
-
-```
-src/posecalib/          library
-    api.py              calibrate(), Calibrator, Calibration, triangulate(), align_to_floor()
-    initialization.py   pairwise poses, incremental growth
-    bundle.py           bundle adjustment and IRLS refinement
-    geometry.py         two-view geometry, robust triangulation, PnP
-    sim/                synthetic scenes: cameras, walking person, detector model, board baseline
-benchmarks/             simulation benchmark
-examples/               quick start on synthetic data, calibration from a .npz file
-tests/                  pytest suite
-```
-
-```bash
-pytest                                     # tests (about 20 s)
-python examples/synthetic_quickstart.py    # end-to-end example (under a minute)
-python benchmarks/run_benchmark.py         # full benchmark (about 30 min on 14 workers; hardware-dependent)
-```
+Run the tests from the checkout with `uv sync --locked --extra dev` followed by
+`uv run --no-sync python -m pytest -q`. See `benchmarks/` for synthetic experiment scripts.
 
 ## License
 

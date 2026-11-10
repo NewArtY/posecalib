@@ -1,0 +1,122 @@
+[
+  {
+    "seed": 0,
+    "delay_frames": 0.0,
+    "ok": true,
+    "offset_error_ms": 0.45358528674844295,
+    "true_offsets_seconds": [
+      0.0,
+      0.0,
+      -0.0,
+      0.0
+    ],
+    "estimated_offsets_seconds": [
+      0.0,
+      -0.0004415490194898569,
+      -0.00045358528674844297,
+      -0.00024387562278060834
+    ],
+    "rotation_raw_deg": 0.024210094300573953,
+    "rotation_sync_deg": 0.02457642957949983,
+    "centers_raw_mm": 2.085189803437012,
+    "centers_sync_mm": 1.6463288150830748,
+    "sync_pair_consistency_ms": 0.15985677039793167,
+    "runtime_s": 37.701075999997556
+  },
+  {
+    "seed": 0,
+    "delay_frames": 0.5,
+    "ok": true,
+    "offset_error_ms": 0.43900794116163466,
+    "true_offsets_seconds": [
+      0.0,
+      0.016666666666666666,
+      -0.011666666666666665,
+      0.006666666666666667
+    ],
+    "estimated_offsets_seconds": [
+      0.0,
+      0.016297047821361724,
+      -0.0121056746078283,
+      0.006514866835361253
+    ],
+    "rotation_raw_deg": 0.2555956534215404,
+    "rotation_sync_deg": 0.02571123664952538,
+    "centers_raw_mm": 15.058256790514397,
+    "centers_sync_mm": 2.238652526414806,
+    "sync_pair_consistency_ms": 0.7200189128583316,
+    "runtime_s": 51.43044529999315
+  },
+  {
+    "seed": 0,
+    "delay_frames": 1.0,
+    "ok": true,
+    "offset_error_ms": 0.38761344534809367,
+    "true_offsets_seconds": [
+      0.0,
+      0.03333333333333333,
+      -0.02333333333333333,
+      0.013333333333333334
+    ],
+    "estimated_offsets_seconds": [
+      0.0,
+      0.032993342681873504,
+      -0.023720946778681425,
+      0.012955134855362697
+    ],
+    "rotation_raw_deg": 0.5596293476086985,
+    "rotation_sync_deg": 0.01802733272222917,
+    "centers_raw_mm": 38.071627906182954,
+    "centers_sync_mm": 1.4517185520191627,
+    "sync_pair_consistency_ms": 0.5433531153072497,
+    "runtime_s": 31.99763329999405
+  },
+  {
+    "seed": 0,
+    "delay_frames": 2.0,
+    "ok": true,
+    "offset_error_ms": 0.24580770104325883,
+    "true_offsets_seconds": [
+      0.0,
+      0.06666666666666667,
+      -0.04666666666666666,
+      0.02666666666666667
+    ],
+    "estimated_offsets_seconds": [
+      0.0,
+      0.0666186009265582,
+      -0.04675220147733081,
+      0.02642085896562341
+    ],
+    "rotation_raw_deg": 1.2464898008535086,
+    "rotation_sync_deg": 0.021590266916249223,
+    "centers_raw_mm": 91.77303951243275,
+    "centers_sync_mm": 1.557147838298473,
+    "sync_pair_consistency_ms": 0.41121804914476257,
+    "runtime_s": 26.996069500004523
+  },
+  {
+    "seed": 0,
+    "delay_frames": 3.0,
+    "ok": true,
+    "offset_error_ms": 0.20021597672485736,
+    "true_offsets_seconds": [
+      0.0,
+      0.1,
+      -0.06999999999999999,
+      0.04000000000000001
+    ],
+    "estimated_offsets_seconds": [
+      0.0,
+      0.09991476651487645,
+      -0.0699092509237156,
+      0.040200215976724865
+    ],
+    "rotation_raw_deg": 2.0242487024253717,
+    "rotation_sync_deg": 0.028289168964657913,
+    "centers_raw_mm": 153.28377186550205,
+    "centers_sync_mm": 1.9696244390818118,
+    "sync_pair_consistency_ms": 0.42176754222962576,
+    "runtime_s": 24.42218480000156
+  }
+]
