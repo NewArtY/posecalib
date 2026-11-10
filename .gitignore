@@ -55,6 +55,8 @@ desktop.ini
 # benchmark output (re-create with benchmarks/run_benchmark.py); figures for the
 # README are copied to docs/
 benchmarks/results/
+benchmarks/sync_results/
+*.task
 # user data: detections and calibrations
 *.npz
 rig*.json

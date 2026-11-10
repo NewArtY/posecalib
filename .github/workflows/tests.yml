@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,3 +20,66 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.22"
+      - run: uv lock --check
+      - run: uv sync --locked --extra dev
+      - run: uv build
+      - name: Check the source archive includes test scripts and helpers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tarfile import open as open_tar
+
+          archive, = Path("dist").glob("*.tar.gz")
+          with open_tar(archive) as sdist:
+              files = {member.name.split("/", 1)[1] for member in sdist
+                       if member.isfile() and "/" in member.name}
+          expected = {path.as_posix() for directory in ("tests", "examples", "benchmarks")
+                      for path in Path(directory).rglob("*.py")}
+          missing = sorted(expected - files)
+          if missing:
+              raise SystemExit("Source archive missing: " + ", ".join(missing))
+          PY
+      - name: Replace editable installation with the built wheel
+        run: uv pip install --python .venv/bin/python --no-deps --reinstall dist/*.whl
+      - name: Check installed wheel metadata without the source path
+        run: uv run --no-sync python -I -m pytest -q -o pythonpath= --import-mode=importlib tests/test_packaging.py
+
+  video-extra:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.22"
+      - run: uv sync --locked --extra video
+      - name: Check optional runtime APIs without downloading a model
+        run: >-
+          uv run --no-sync python -I -c
+          "import cv2; import mediapipe as mp;
+          assert callable(cv2.VideoCapture);
+          assert callable(cv2.undistort);
+          assert callable(mp.tasks.BaseOptions);
+          assert callable(mp.tasks.vision.PoseLandmarkerOptions);
+          assert callable(mp.tasks.vision.PoseLandmarker.create_from_options);
+          assert mp.tasks.vision.RunningMode.VIDEO is not None;
+          assert callable(mp.Image);
+          assert mp.ImageFormat.SRGB is not None"
