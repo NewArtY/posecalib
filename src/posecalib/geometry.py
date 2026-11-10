@@ -54,7 +54,7 @@ def rotation_angle_deg(Ra, Rb) -> float:
 
 def project_to_so3(M):
     """Closest rotation matrix to ``M`` (Frobenius norm)."""
-    U, _, Vt = np.linalg.svd(M)
+    U, _, Vt = np.linalg.svd(M, full_matrices=False)
     R = U @ Vt
     if np.linalg.det(R) < 0:
         U[:, -1] *= -1
@@ -67,7 +67,7 @@ def umeyama(src, dst, with_scale=True):
     ms, md = src.mean(0), dst.mean(0)
     xs, xd = src - ms, dst - md
     S = xd.T @ xs / len(src)
-    U, D, Vt = np.linalg.svd(S)
+    U, D, Vt = np.linalg.svd(S, full_matrices=False)
     E = np.eye(3)
     if np.linalg.det(U) * np.linalg.det(Vt) < 0:
         E[2, 2] = -1
@@ -120,10 +120,11 @@ def eight_point(x1, x2):
     A = np.stack([b[..., 0] * a[..., 0], b[..., 0] * a[..., 1], b[..., 0],
                   b[..., 1] * a[..., 0], b[..., 1] * a[..., 1], b[..., 1],
                   a[..., 0], a[..., 1], o], -1)
-    _, _, Vt = np.linalg.svd(A)
+    # Minimal 8x9 needs the ninth right null vector; tall systems need no full U.
+    _, _, Vt = np.linalg.svd(A, full_matrices=A.shape[-2] < A.shape[-1])
     Fn = Vt[:, -1, :].reshape(B, 3, 3)
     E = T2.transpose(0, 2, 1) @ Fn @ T1
-    U, _, Vt = np.linalg.svd(E)
+    U, _, Vt = np.linalg.svd(E, full_matrices=False)
     return (U * np.array([1.0, 1.0, 0.0])) @ Vt
 
 
@@ -169,7 +170,8 @@ def homography_median(x1, x2, rng, fpx=1200.0, n_iter=400):
                            -q[..., 0] * p[..., 0], -q[..., 0] * p[..., 1], -q[..., 0]], -1)
     A[:, 1::2] = np.stack([z, z, z, p[..., 0], p[..., 1], o,
                            -q[..., 1] * p[..., 0], -q[..., 1] * p[..., 1], -q[..., 1]], -1)
-    H = np.linalg.svd(A)[2][:, -1].reshape(n_iter, 3, 3)
+    # Four-point DLT is 8x9: reduced SVD would discard the required null vector.
+    H = np.linalg.svd(A, full_matrices=True)[2][:, -1].reshape(n_iter, 3, 3)
     ah = np.column_stack([a, np.ones(len(a))])
     y = np.einsum('bij,nj->bni', H, ah)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -185,7 +187,7 @@ def triangulate_dlt(Rs, ts, xn, w):
     A = np.empty((T, 2 * M, 4))
     A[:, 0::2] = w[..., None] * (xn[..., 0, None] * P[None, :, 2, :] - P[None, :, 0, :])
     A[:, 1::2] = w[..., None] * (xn[..., 1, None] * P[None, :, 2, :] - P[None, :, 1, :])
-    _, _, Vt = np.linalg.svd(A)
+    _, _, Vt = np.linalg.svd(A, full_matrices=A.shape[-2] < A.shape[-1])
     Xh = Vt[:, -1, :]
     with np.errstate(divide='ignore', invalid='ignore'):
         return Xh[:, :3] / Xh[:, 3:4]
@@ -196,7 +198,7 @@ def pose_from_essential(E, x1, x2):
 
     Returns ``(n_front, R, t, X, front_mask)``.
     """
-    U, _, Vt = np.linalg.svd(E)
+    U, _, Vt = np.linalg.svd(E, full_matrices=False)
     if np.linalg.det(U) < 0:
         U = -U
     if np.linalg.det(Vt) < 0:
@@ -293,6 +295,8 @@ def triangulate_robust(Rs, ts, fs, uv, c, valid, cam_mask=None, sig_hat=None, k_
 
     Returns:
         ``X (T,3)``, ``ok (T,)``, weighted residuals ``(T,M)``, inlier mask ``(T,M)``, ``sig_hat``.
+        Acceptance requires at least two consistent positive-depth views with
+        nonzero parallax; rejected views do not veto cheirality.
     """
     T_all, M = c.shape
     if cam_mask is None:
@@ -383,8 +387,19 @@ def triangulate_robust(Rs, ts, fs, uv, c, valid, cam_mask=None, sig_hat=None, k_
         dX = np.where(np.isfinite(dX), dX, 0.0)
         X = X - dX
     r, z = wres(X)
-    inl = use & (r < Tt) & (z > 0)
-    ok = np.isfinite(X).all(1) & (inl.sum(1) >= 2) & ~((~(z > 0)) & use).any(1)
+    inl = use & (r < Tt) & np.isfinite(z) & (z > 0)
+    # Check depth observability using only the selected inliers. Coincident
+    # centres or collinear rays can yield arbitrary finite DLT solutions, while
+    # the IRLS damping hides their singularity. The angular tolerance only
+    # excludes numerically parallel rays (sin(angle) <= 1e-8).
+    rays = X[:, None, :] - camera_centers(Rs, ts)[None]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rays = rays / np.linalg.norm(rays, axis=-1, keepdims=True)
+    parallax = np.zeros(T, bool)
+    for i, j in combinations(cams_on, 2):
+        sin_angle = np.linalg.norm(np.cross(rays[:, i], rays[:, j]), axis=-1)
+        parallax |= inl[:, i] & inl[:, j] & (sin_angle > 1e-8)
+    ok = np.isfinite(X).all(1) & (inl.sum(1) >= 2) & parallax
     X_out[sel], ok_out[sel], r_out[sel], inl_out[sel] = X, ok, np.where(use, r, np.nan), inl
     return X_out, ok_out, r_out, inl_out, sig_hat
 
@@ -403,7 +418,8 @@ def pnp_dlt(X, xn):
     Av = np.concatenate([Z, -Xh, xn[..., 1:2] * Xh], -1)
     A = np.empty((B, 2 * n, 12))
     A[:, 0::2], A[:, 1::2] = Au, Av
-    _, _, Vt = np.linalg.svd(A)
+    # For n >= 6, U is (2n,12), not (2n,2n); Vt still contains all 12 vectors.
+    _, _, Vt = np.linalg.svd(A, full_matrices=A.shape[-2] < A.shape[-1])
     Pn = Vt[:, -1].reshape(B, 3, 4)
     Tm = np.zeros((B, 4, 4))
     Tm[:, :3, :3] = s[:, None, None] * np.eye(3)
@@ -412,7 +428,7 @@ def pnp_dlt(X, xn):
     P = Pn @ Tm
     d = np.linalg.det(P[:, :, :3])
     P[d < 0] *= -1
-    U, S, Vt = np.linalg.svd(P[:, :, :3])
+    U, S, Vt = np.linalg.svd(P[:, :, :3], full_matrices=False)
     R = U @ Vt
     t = P[:, :, 3] / S.mean(1)[:, None]
     return R, t
@@ -434,7 +450,7 @@ def lmeds_pnp(X, uv, f, rng, n_iter=300):
     idx = i_d[np.argpartition(rng.random((n_iter, len(i_d))), 6, axis=1)[:, :6]]
     R, t = pnp_dlt(X[idx], xn[idx])
     Xs6 = X[idx] - X[idx].mean(1, keepdims=True)
-    sv = np.linalg.svd(Xs6, compute_uv=False)
+    sv = np.linalg.svd(Xs6, full_matrices=False, compute_uv=False)
     degen = sv[:, 2] < 0.1 * sv[:, 0]                  # DLT-PnP degenerates on coplanar samples
 
     def err2(R_, t_, Xs, uvs):

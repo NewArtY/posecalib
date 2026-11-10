@@ -49,7 +49,9 @@ def local_bundle_adjust(Rs, ts, f, tracks, X, registered, ref, ok, n_outer=3):
     Rl, tl = Rs[cams].copy(), ts[cams].copy()
     uvp, _, _ = reproject(Rl, tl, f[cams], X0)
     r = (uvp[pi, ci] - uv) * sw0[:, None]
-    sig = robust_sigma(r)
+    sig_floor = (np.sqrt(np.finfo(float).eps)
+                 * np.median(np.maximum(1.0, np.abs(uv)) * sw0[:, None]))
+    sig = robust_sigma(r, floor=sig_floor)
     Xl = X0
     for it in range(n_outer):
         w = robust_weight(np.linalg.norm(r, axis=1) / (2.5 * sig), 'huber')
@@ -58,7 +60,7 @@ def local_bundle_adjust(Rs, ts, f, tracks, X, registered, ref, ok, n_outer=3):
         uvp, _, _ = reproject(Rl, tl, f[cams], Xl)
         r = (uvp[pi, ci] - uv) * sw0[:, None]
         if it < 2:
-            sig = robust_sigma(r)
+            sig = robust_sigma(r, floor=sig_floor)
     Rs, ts = Rs.copy(), ts.copy()
     Rs[cams], ts[cams] = Rl, tl
     return Rs, ts
@@ -185,6 +187,6 @@ def build_observations(tracks, ok, n_frames, n_joints, segments):
         bi.append(pt_of_track[tp[m]])
         bj.append(pt_of_track[tq[m]])
         bb.append(np.full(m.sum(), b))
-    obs['bones'] = (np.concatenate(bi).astype(int), np.concatenate(bj).astype(int),
-                    np.concatenate(bb).astype(int))
+    obs['bones'] = tuple(np.concatenate(items).astype(int) if items else np.empty(0,dtype=int)
+                         for items in (bi,bj,bb))
     return obs

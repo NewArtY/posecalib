@@ -6,10 +6,15 @@ import numpy as np
 LOSSES = ('linear', 'huber', 'cauchy')
 
 
-def robust_sigma(residuals) -> float:
-    """Robust standard deviation of residual components: 1.4826 * median(|r|)."""
+def robust_sigma(residuals, *, floor=np.sqrt(np.finfo(float).eps)) -> float:
+    """``1.4826 * median(|r|)``, bounded below by numerical resolution.
+
+    A zero MAD is possible for exact fits or a majority of exact inliers; it
+    must not produce a zero IRLS threshold. ``floor`` has the same units as the
+    residual components (including confidence weights), not noise variance.
+    """
     v = np.abs(np.asarray(residuals).ravel())
-    return float(1.4826 * np.median(v))
+    return float(max(1.4826 * np.median(v), floor))
 
 
 def robust_weight(u, loss: str):

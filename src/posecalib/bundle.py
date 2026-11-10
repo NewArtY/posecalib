@@ -19,6 +19,27 @@ from .geometry import left_jacobian_so3, reproject, rotation_angle_deg, skew
 from .robust import robust_sigma, robust_weight
 
 
+def _observed_segments(bones, L, bone_w=0.0):
+    """Compact finite, observed length parameters; retain full output indexing.
+
+    No length is inferred for an unobserved segment. Rows without a finite
+    initial length are omitted together with that nuisance parameter.
+    """
+    if bones is None:
+        return None, None, bone_w, None, np.empty(0, dtype=int)
+    L = np.asarray(L, float)
+    bi, bj, bb = (np.asarray(v, dtype=int) for v in bones)
+    keep = np.isfinite(L[bb])
+    active, remapped = np.unique(bb[keep], return_inverse=True)
+    full_L = np.full(L.shape, np.nan)
+    bw = np.asarray(bone_w, float)
+    if bw.ndim:
+        bw = np.broadcast_to(bw, bb.shape)[keep]
+    if not len(active):
+        return None, None, bw, full_L, active
+    return (bi[keep], bj[keep], remapped), L[active].copy(), bw, full_L, active
+
+
 def bundle_adjust(Rs0, ts0, X0, f0, ci, pi, uv, sw, *, bones=None, bone_w=0.0, L0=None,
                   refine_focal=False, max_nfev=200, jac_mode='analytic'):
     """Weighted bundle adjustment.
@@ -35,10 +56,12 @@ def bundle_adjust(Rs0, ts0, X0, f0, ci, pi, uv, sw, *, bones=None, bone_w=0.0, L
         sw: ``(N,)`` square roots of observation weights.
         bones: optional ``(idx_i, idx_j, segment_id)`` arrays of point pairs.
         bone_w: scalar or per-pair weight of the segment term ``bone_w * (|Xi - Xj| - L)``.
-        L0: initial segment lengths.
+        L0: initial segment lengths. Only finite lengths with observation pairs
+            enter the solve; omitted segments are returned as NaN in the full array.
         refine_focal: also estimate one focal length per camera.
         jac_mode: ``'analytic'`` or ``'fd'`` (finite differences with the same sparsity; slower).
     """
+    bones, L0, bone_w, full_L, active = _observed_segments(bones, L0, bone_w)
     M = len(Rs0)
     P = len(X0)
     cam_full = np.concatenate([Rotation.from_matrix(Rs0).as_rotvec(), ts0], axis=1)
@@ -148,7 +171,9 @@ def bundle_adjust(Rs0, ts0, X0, f0, ci, pi, uv, sw, *, bones=None, bone_w=0.0, L
     r_px[order] = np.linalg.norm(r / sw[:, None], axis=1)        # unweighted error, px
     rw = np.empty((N, 2))
     rw[order] = r
-    return dict(Rs=Rs, ts=cam[:, 3:].copy(), X=X, L=L, f=np.array(f, float), nfev=res.nfev,
+    if full_L is not None:
+        full_L[active] = L if L is not None else []
+    return dict(Rs=Rs, ts=cam[:, 3:].copy(), X=X, L=full_L, f=np.array(f, float), nfev=res.nfev,
                 status=res.status, time=dt, r_px=r_px, r_w=rw, cost=res.cost)
 
 
@@ -159,7 +184,10 @@ def refine(Rs, ts, X, f, obs, *, L=None, weighted=True, loss='cauchy', use_segme
 
     The residual scale is ``sigma = 1.4826 * MAD`` of the weighted residuals, updated
     during the first ``irls_scale_iters`` iterations and then frozen; the loss
-    threshold is ``k = robust_k * sigma``. With ``loss='linear'`` a single weighted
+    threshold is ``k = robust_k * sigma``. A numerical floor of sqrt(machine
+    epsilon) times the median confidence-weighted coordinate magnitude (at least
+    one pixel before weighting) keeps exact fits finite without adding detector
+    noise or changing confidence units. With ``loss='linear'`` a single weighted
     least-squares solve is performed.
 
     The segment term ``(sigma / segment_sigma) * (|Xi - Xj| - L_b)`` equates a
@@ -177,9 +205,10 @@ def refine(Rs, ts, X, f, obs, *, L=None, weighted=True, loss='cauchy', use_segme
         weights ``w`` and the scale ``sig_hat``.
     """
     sw0 = obs['c'] if weighted else np.ones(len(obs['c']))
-    bones = obs['bones'] if use_segments else None
-    L = None if bones is None else np.array(L, float)
+    bones, L, _, full_L, active = _observed_segments(obs['bones'] if use_segments else None, L)
     f = np.array(f, float)
+    sig_floor = (np.sqrt(np.finfo(float).eps)
+                 * np.median(np.maximum(1.0, np.abs(obs['uv'])) * sw0[:, None]))
 
     def resid(Rs, ts, X, f, L):
         uvp, _, _ = reproject(Rs, ts, f, X)
@@ -188,7 +217,7 @@ def refine(Rs, ts, X, f, obs, *, L=None, weighted=True, loss='cauchy', use_segme
         return r, rb
 
     r, rb = resid(Rs, ts, X, f, L)
-    sig = robust_sigma(r)
+    sig = robust_sigma(r, floor=sig_floor)
     n_outer = 1 if loss == 'linear' else irls_max_iter
     total_t, total_nfev, it = 0.0, 0, 0
     w_obs = np.ones(len(r))
@@ -209,7 +238,7 @@ def refine(Rs, ts, X, f, obs, *, L=None, weighted=True, loss='cauchy', use_segme
         total_nfev += out['nfev']
         r, rb = resid(Rs, ts, X, f, L)
         if it < irls_scale_iters:
-            sig = robust_sigma(r)
+            sig = robust_sigma(r, floor=sig_floor)
         if it > 0 and dR < tol_deg and dt_ < tol_m:
             break
     out['time'] = total_t
@@ -218,4 +247,7 @@ def refine(Rs, ts, X, f, obs, *, L=None, weighted=True, loss='cauchy', use_segme
     out['sig_hat'] = sig
     out['r_px'] = np.linalg.norm(r, axis=1) / sw0
     out['w'] = robust_weight(np.linalg.norm(r, axis=1) / (robust_k * sig), loss)
+    if full_L is not None:
+        full_L[active] = L if L is not None else []
+    out['L'] = full_L
     return out
